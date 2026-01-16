@@ -1,11 +1,8 @@
+// src/components/chat/MessageInput.tsx
 import { Send, Paperclip, Mic, StopCircle } from "lucide-react"
 import { useState, useRef, useEffect } from "react"
-
-import { fileToDataUrl } from "../../utils/file"
 import { sendVisionUpload } from "../../services/vision_service"
-import { validateVisionImages } from "../../validators/vision"
-import type { VisionRequest } from "../../types/vision"
-
+import { sendAudio } from "../../services/audio_service"
 
 interface MessageInputProps {
   onSendMessage: (message: string) => void
@@ -16,11 +13,14 @@ export function MessageInput({ onSendMessage, disabled }: MessageInputProps) {
   const [message, setMessage] = useState("")
   const [isRecording, setIsRecording] = useState(false)
   const [isUploadingImage, setIsUploadingImage] = useState(false)
-  
+  const [audioURL, setAudioURL] = useState<string | null>(null)
+  const [isSendingAudio, setIsSendingAudio] = useState(false)
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
 
-  // Auto-resize textarea
+  // ===== Auto-resize textarea =====
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto"
@@ -28,16 +28,13 @@ export function MessageInput({ onSendMessage, disabled }: MessageInputProps) {
     }
   }, [message])
 
+  // ===== Enviar texto =====
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!message.trim() || disabled || isUploadingImage) return
-
+    if (!message.trim() || disabled || isUploadingImage || isSendingAudio) return
     onSendMessage(message.trim())
     setMessage("")
-
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto"
-    }
+    if (textareaRef.current) textareaRef.current.style.height = "auto"
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -47,43 +44,81 @@ export function MessageInput({ onSendMessage, disabled }: MessageInputProps) {
     }
   }
 
+  // ===== Subir imágenes =====
   const handleFileUpload = () => {
-  const input = document.createElement("input")
-  input.type = "file"
-  input.accept = "image/*"
+    const input = document.createElement("input")
+    input.type = "file"
+    input.accept = "image/*"
 
-  input.onchange = async (e) => {
-    const file = (e.target as HTMLInputElement).files?.[0]
-    if (!file) return
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0]
+      if (!file) return
+      setIsUploadingImage(true)
 
-    setIsUploadingImage(true)
+      try {
+        const response = await sendVisionUpload(file)
+        onSendMessage(response.result.description ?? "No se pudo analizar la imagen.")
+      } catch (err) {
+        console.error("Error analizando imagen:", err)
+        onSendMessage("❌ Error al analizar la imagen.")
+      } finally {
+        setIsUploadingImage(false)
+      }
+    }
+    input.click()
+  }
 
-    try {
-      const response = await sendVisionUpload(file)
+  // ===== Grabación de audio =====
+  const toggleRecording = async () => {
+    if (isRecording) {
+      // Stop recording
+      mediaRecorderRef.current?.stop()
+      setIsRecording(false)
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        const mediaRecorder = new MediaRecorder(stream)
+        audioChunksRef.current = []
 
-      onSendMessage(
-        response.result.description ??
-          "No se pudo analizar la imagen."
-      )
-    } catch (error) {
-      console.error("Error analizando imagen:", error)
-      onSendMessage("❌ Error al analizar la imagen.")
-    } finally {
-      setIsUploadingImage(false)
+        mediaRecorder.ondataavailable = (e) => audioChunksRef.current.push(e.data)
+
+        mediaRecorder.onstop = async () => {
+          const blob = new Blob(audioChunksRef.current, { type: "audio/webm" })
+          const url = URL.createObjectURL(blob)
+          setAudioURL(url)
+
+          // Enviar audio al backend para transcripción
+          await sendRecordedAudio(blob)
+        }
+
+        mediaRecorder.start()
+        mediaRecorderRef.current = mediaRecorder
+        setIsRecording(true)
+        console.log("Recording started")
+      } catch (err) {
+        console.error("No se pudo acceder al micrófono:", err)
+      }
     }
   }
 
-  input.click()
-}
-
-  const toggleRecording = () => {
-    setIsRecording((prev) => !prev)
-
-    if (!isRecording) {
-      console.log("Recording started")
-    } else {
-      console.log("Recording stopped")
+  const sendRecordedAudio = async (audioBlob: Blob) => {
+    setIsSendingAudio(true)
+    try {
+      const file = new File([audioBlob], "voice.webm", { type: "audio/webm" })
+      const data = await sendAudio(file) // Usamos el servicio simplificado de transcripción
+      onSendMessage(data.text ?? data.transcription ?? "No se pudo procesar el audio.")
+    } catch (err) {
+      console.error("Error enviando audio:", err)
+      onSendMessage("❌ Error al procesar el audio.")
+    } finally {
+      setIsSendingAudio(false)
     }
+  }
+
+  const playAudio = () => {
+    if (!audioURL) return
+    const audio = new Audio(audioURL)
+    audio.play()
   }
 
   return (
@@ -91,13 +126,13 @@ export function MessageInput({ onSendMessage, disabled }: MessageInputProps) {
       <div className="max-w-4xl mx-auto">
         <form onSubmit={handleSubmit} className="relative">
           <div className="flex items-end gap-2 bg-input-background border border-border rounded-2xl p-2 focus-within:border-primary/50 transition-colors">
-            {/* Attach Image Button */}
+            
+            {/* Attach Image */}
             <button
               type="button"
               onClick={handleFileUpload}
-              disabled={disabled || isUploadingImage}
+              disabled={disabled || isUploadingImage || isSendingAudio}
               className="p-2 hover:bg-secondary rounded-lg transition-colors flex-shrink-0 disabled:opacity-50"
-              aria-label="Attach image"
             >
               <Paperclip className="h-5 w-5 text-muted-foreground" />
             </button>
@@ -111,38 +146,43 @@ export function MessageInput({ onSendMessage, disabled }: MessageInputProps) {
               placeholder="Escribe tu consulta académica..."
               className="flex-1 bg-transparent resize-none outline-none py-2 px-2 max-h-32 min-h-[24px]"
               rows={1}
-              disabled={disabled || isUploadingImage}
+              disabled={disabled || isUploadingImage || isSendingAudio}
             />
 
-            {/* Voice Recording Button */}
+            {/* Voice Recording */}
             <button
               type="button"
               onClick={toggleRecording}
-              disabled={disabled || isUploadingImage}
+              disabled={disabled || isUploadingImage || isSendingAudio}
               className={`p-2 rounded-lg transition-colors flex-shrink-0 ${
                 isRecording
                   ? "bg-destructive/10 hover:bg-destructive/20"
                   : "hover:bg-secondary"
               }`}
-              aria-label={isRecording ? "Stop recording" : "Start recording"}
             >
-              {isRecording ? (
-                <StopCircle className="h-5 w-5 text-destructive animate-pulse" />
-              ) : (
-                <Mic className="h-5 w-5 text-muted-foreground" />
-              )}
+              {isRecording ? <StopCircle className="h-5 w-5 text-destructive animate-pulse" /> : <Mic className="h-5 w-5 text-muted-foreground" />}
             </button>
 
-            {/* Send Button */}
+            {/* Play recorded audio */}
+            {audioURL && !isRecording && (
+              <button
+                type="button"
+                onClick={playAudio}
+                className="p-2 rounded-lg hover:bg-secondary flex-shrink-0"
+              >
+                🎵
+              </button>
+            )}
+
+            {/* Send Text */}
             <button
               type="submit"
-              disabled={!message.trim() || disabled || isUploadingImage}
+              disabled={!message.trim() || disabled || isUploadingImage || isSendingAudio}
               className={`p-2 rounded-lg transition-all flex-shrink-0 ${
-                message.trim() && !disabled && !isUploadingImage
+                message.trim() && !disabled && !isUploadingImage && !isSendingAudio
                   ? "bg-primary text-primary-foreground hover:bg-primary/90"
                   : "bg-muted text-muted-foreground cursor-not-allowed"
               }`}
-              aria-label="Send message"
             >
               <Send className="h-5 w-5" />
             </button>
@@ -156,6 +196,8 @@ export function MessageInput({ onSendMessage, disabled }: MessageInputProps) {
             <p className="text-xs text-muted-foreground">
               {isUploadingImage
                 ? "Analizando imagen…"
+                : isSendingAudio
+                ? "Procesando audio…"
                 : message.length > 0
                 ? `${message.length} caracteres`
                 : ""}
