@@ -7,6 +7,9 @@ import { ChatArea } from "./components/ChatArea"
 import type { Message } from "./components/ChatArea"
 import { MessageInput } from "./components/MessageInput"
 
+import { Login } from "./components/login"
+import { Register } from "./components/register"
+
 import { sendChatMessage } from "../services/chat_service"
 import { Role, type ApiMessage } from "../types/chat"
 
@@ -21,6 +24,11 @@ interface Conversation {
 /* ================== APP ================== */
 
 export default function App() {
+  /* ---------- AUTH ---------- */
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [showRegister, setShowRegister] = useState(false)
+
+  /* ---------- UI ---------- */
   const [isDark, setIsDark] = useState(false)
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
@@ -52,7 +60,24 @@ export default function App() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages, isTyping])
 
-  /* ================== HANDLERS ================== */
+  /* ================== AUTH HANDLERS ================== */
+
+  const handleLogin = () => {
+    setIsAuthenticated(true)
+  }
+
+  const handleRegister = () => {
+    setIsAuthenticated(true)
+    setShowRegister(false)
+  }
+
+  const handleLogout = () => {
+    setIsAuthenticated(false)
+    setShowRegister(false)
+    setMessages([])
+  }
+
+  /* ================== UI HANDLERS ================== */
 
   const handleToggleTheme = () => setIsDark((p) => !p)
 
@@ -71,25 +96,18 @@ export default function App() {
   const handleSelectConversation = (id: string) => {
     setActiveConversationId(id)
     setIsSidebarOpen(false)
-    setMessages([]) // luego historial real
+    setMessages([])
   }
 
   const handleDeleteConversation = (id: string) => {
     setConversations((prev) => prev.filter((c) => c.id !== id))
   }
 
-  /* ======================================================
-     🔥 ENVÍO DE MENSAJES
-     - Texto → backend chat
-     - Imagen → solo frontend (preview)
-     ====================================================== */
-  const handleSendMessage = async (
-    content: string,
-    image?: string // data_url
-  ) => {
+  /* ================== MENSAJES ================== */
+
+  const handleSendMessage = async (content: string, image?: string) => {
     if (!content.trim() && !image) return
 
-    /* ---------- 1️⃣ MENSAJE UI USUARIO ---------- */
     const userUiMessage: Message = {
       id: Date.now().toString(),
       role: "user",
@@ -101,13 +119,11 @@ export default function App() {
     const nextUiMessages = [...messages, userUiMessage]
     setMessages(nextUiMessages)
 
-    // ⚠️ solo imagen → no llamar backend
     if (!content.trim()) return
 
     setIsTyping(true)
 
     try {
-      /* ---------- 2️⃣ UI → API (SOLO TEXTO) ---------- */
       const apiMessages: ApiMessage[] = [
         {
           role: Role.system,
@@ -124,14 +140,12 @@ export default function App() {
           })),
       ]
 
-      /* ---------- 3️⃣ BACKEND CHAT ---------- */
       const res = await sendChatMessage({
         messages: apiMessages,
         temperature: 0.5,
         max_tokens: 512,
       })
 
-      /* ---------- 4️⃣ MENSAJE UI BOT ---------- */
       const botUiMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
@@ -141,7 +155,6 @@ export default function App() {
 
       setMessages((prev) => [...prev, botUiMessage])
 
-      /* ---------- 5️⃣ TÍTULO CONVERSACIÓN ---------- */
       if (messages.length === 0) {
         setConversations((prev) =>
           prev.map((c) =>
@@ -156,9 +169,7 @@ export default function App() {
           )
         )
       }
-    } catch (error) {
-      console.error(error)
-
+    } catch {
       setMessages((prev) => [
         ...prev,
         {
@@ -174,11 +185,39 @@ export default function App() {
     }
   }
 
-  /* ================== UI ================== */
+  /* ================== AUTH UI ================== */
+
+  if (!isAuthenticated && showRegister) {
+    return (
+      <Register
+        onRegister={handleRegister}
+        onBackToLogin={() => setShowRegister(false)}
+        isDark={isDark}
+        onToggleTheme={handleToggleTheme}
+      />
+    )
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <Login
+        onLogin={handleLogin}
+        onGoToRegister={() => setShowRegister(true)}
+        isDark={isDark}
+        onToggleTheme={handleToggleTheme}
+      />
+    )
+  }
+
+  /* ================== CHAT UI ================== */
 
   return (
     <div className="h-screen w-full flex flex-col bg-background text-foreground">
-      <Header isDark={isDark} onToggleTheme={handleToggleTheme} />
+      <Header
+        isDark={isDark}
+        onToggleTheme={handleToggleTheme}
+        onLogout={handleLogout}
+      />
 
       <div className="flex-1 flex overflow-hidden relative">
         <button
